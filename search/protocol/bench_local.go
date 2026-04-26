@@ -47,6 +47,7 @@ type SetupBenchReport struct {
 	ServerStateLoadSeconds    float64 `json:"server_state_load_seconds"`
 	HintProcessorSetupSeconds float64 `json:"hint_processor_setup_seconds"`
 	ClientSetupSeconds        float64 `json:"client_setup_seconds"`
+	ClientSetupCoreSeconds    float64 `json:"client_setup_core_seconds"`
 	HintTotalMB               float64 `json:"hint_total_mb"`
 	CorpusParamsMB            float64 `json:"corpus_params_mb"`
 	EmbeddingHintMB           float64 `json:"embedding_hint_mb"`
@@ -59,6 +60,8 @@ type PhaseBenchReport struct {
 	CommunicationMB           float64 `json:"communication_mb"`
 	ClientQuerySecondsMean    float64 `json:"client_query_seconds_mean"`
 	ClientQuerySecondsTotal   float64 `json:"client_query_seconds_total"`
+	ClientCoreSecondsMean     float64 `json:"client_core_seconds_mean"`
+	ClientCoreSecondsTotal    float64 `json:"client_core_seconds_total"`
 	ServerAnswerSecondsMean   float64 `json:"server_answer_seconds_mean"`
 	ServerAnswerSecondsTotal  float64 `json:"server_answer_seconds_total"`
 	ServerCoreSecondsMean     float64 `json:"server_core_seconds_mean"`
@@ -71,6 +74,8 @@ type TotalsBenchReport struct {
 	CommunicationMB        float64 `json:"communication_mb"`
 	ServerCoreSecondsMean  float64 `json:"server_core_seconds_mean"`
 	ServerCoreSecondsTotal float64 `json:"server_core_seconds_total"`
+	ClientCoreSecondsMean  float64 `json:"client_core_seconds_mean"`
+	ClientCoreSecondsTotal float64 `json:"client_core_seconds_total"`
 	ClientSecondsMean      float64 `json:"client_seconds_mean"`
 	ClientSecondsTotal     float64 `json:"client_seconds_total"`
 }
@@ -156,6 +161,8 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 		p.ServerCoreSecondsMean = p.ServerAnswerSecondsMean
 		p.ServerCoreSecondsTotal = p.ServerAnswerSecondsTotal
 		p.ClientRecoverSecondsMean = p.ClientRecoverSecondsTotal / float64(numQueries)
+		p.ClientCoreSecondsTotal = p.ClientQuerySecondsTotal + p.ClientRecoverSecondsTotal
+		p.ClientCoreSecondsMean = p.ClientCoreSecondsTotal / float64(numQueries)
 	}
 	fillPhaseAverages(&preprocessing)
 	fillPhaseAverages(&online)
@@ -175,7 +182,7 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 		IncludesURLPIR: false,
 		GOMAXPROCS:     runtime.GOMAXPROCS(0),
 		ServerArtifact: serverArtifact,
-		Notes:          "ANNS/embedding phase only. URL/PIR is not run. Server core-seconds equal wall-clock seconds because this command forces GOMAXPROCS=1.",
+		Notes:          "ANNS/embedding phase only. URL/PIR is not run. Client and server core-seconds equal wall-clock seconds because this command forces GOMAXPROCS=1.",
 		Corpus: CorpusBenchReport{
 			NumDocs:        client.params.NumDocs,
 			NumClusters:    client.NumClusters(),
@@ -186,6 +193,7 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 			ServerStateLoadSeconds:    serverLoadSeconds,
 			HintProcessorSetupSeconds: hintProcessorSetupSeconds,
 			ClientSetupSeconds:        clientSetupSeconds,
+			ClientSetupCoreSeconds:    clientSetupSeconds,
 			HintTotalMB:               corpusParamsMB + embeddingHintMB + embeddingIndexMapMB,
 			CorpusParamsMB:            corpusParamsMB,
 			EmbeddingHintMB:           embeddingHintMB,
@@ -197,6 +205,8 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 			CommunicationMB:        preprocessing.CommunicationMB + online.CommunicationMB,
 			ServerCoreSecondsMean:  serverTotal / float64(numQueries),
 			ServerCoreSecondsTotal: serverTotal,
+			ClientCoreSecondsMean:  clientTotal / float64(numQueries),
+			ClientCoreSecondsTotal: clientTotal,
 			ClientSecondsMean:      clientTotal / float64(numQueries),
 			ClientSecondsTotal:     clientTotal,
 		},
