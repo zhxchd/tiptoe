@@ -116,7 +116,7 @@ func ReadEmbeddingsTxt(clusterStart, clusterStop int, conf *config.Config) *Corp
   c.params = Params{
     NumDocs: 0,
     EmbeddingSlots : conf.EMBEDDINGS_DIM(),
-    SlotBits: config.SLOT_BITS(),
+    SlotBits: conf.SLOT_BITS(),
   }
   c.params.checkParams()
 

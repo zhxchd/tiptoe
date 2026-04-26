@@ -4,6 +4,7 @@ import (
   "os"
   "bytes"
   "strings"
+  "path/filepath"
   "encoding/gob"
 )
 
@@ -124,6 +125,10 @@ func (s *Server) GobDecode(buf []byte) error {
 }
 
 func DumpStateToFile[S TiptoeServer](s *S, filename string) {
+  if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+    panic(err)
+  }
+
   f, err := os.Create(filename) // deletes prior contents
   if err != nil {
     panic(err)
@@ -153,6 +158,10 @@ func LoadStateFromFile[S TiptoeServer](s *S, filename string) {
 
 
 func DumpServerToFileWithoutHint(s *Server, filename string) {
+  if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+    panic(err)
+  }
+
   f, err := os.Create(filename) // deletes prior contents
   if err != nil {
     panic(err)

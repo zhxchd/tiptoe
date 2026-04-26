@@ -21,11 +21,13 @@ var preamble = flag.String("preamble", "/home/ubuntu", "Preamble")
 var image_search = flag.Bool("image_search", false, "Image search")
 
 func printUsage() {
- fmt.Println("Usage:\n\"go run . all-servers\" or\n\"go run . client coordinator-ip\" or\n\"go run . coordinator numEmbServers numUrlServers ip1 ip2 ...\" or\n\"go run . emb-server index\" or\n\"go run . url-server index\" or\n\"go run . client-latency coordinator-ip\" or\n\"go run . client-tput-embed coordinator-ip\" or\n\"go run . client-tput-url coordinator-ip\" or\n\"go run . client-tput-offline coordinator-ip\"")
+ fmt.Println("Usage:\n\"go run . all-servers\" or\n\"go run . preprocess-embeddings\" or\n\"go run . bench-emb-local [numQueries] [output.json]\" or\n\"go run . client coordinator-ip\" or\n\"go run . coordinator numEmbServers numUrlServers ip1 ip2 ...\" or\n\"go run . emb-server index\" or\n\"go run . url-server index\" or\n\"go run . client-latency coordinator-ip\" or\n\"go run . client-tput-embed coordinator-ip\" or\n\"go run . client-tput-url coordinator-ip\" or\n\"go run . client-tput-offline coordinator-ip\"")
 }
 
 func main() {
   coordinatorIP := "0.0.0.0"
+  flag.Parse()
+  os.Args = append([]string{os.Args[0]}, flag.Args()...)
   if len(os.Args) < 2 {
     return
   }
@@ -93,6 +95,32 @@ func main() {
 			   false, // serve
 			   conf)
     fmt.Println("Set up all url servers")
+
+  } else if os.Args[1] == "preprocess-embeddings" {
+    protocol.NewEmbeddingServers(0,
+                                 conf.MAX_EMBEDDINGS_SERVERS(),
+                                 conf.EMBEDDINGS_CLUSTERS_PER_SERVER(),
+			         conf.DEFAULT_EMBEDDINGS_HINT_SZ(),
+				 true,  // log
+				 false, // wantCorpus
+				 false, // serve
+				 conf)
+    fmt.Println("Set up all embedding servers")
+
+  } else if os.Args[1] == "bench-emb-local" {
+    numQueries := 10
+    outputPath := "-"
+    if len(os.Args) >= 3 {
+      var err error
+      numQueries, err = strconv.Atoi(os.Args[2])
+      if err != nil {
+        panic(err)
+      }
+    }
+    if len(os.Args) >= 4 {
+      outputPath = os.Args[3]
+    }
+    protocol.BenchEmbeddingsLocal(conf, numQueries, outputPath)
 
   } else if os.Args[1] == "preprocess-coordinator" {
     debug.SetMemoryLimit(200 * 2^(30))
