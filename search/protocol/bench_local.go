@@ -1,11 +1,17 @@
 package protocol
 
 import (
+	"bufio"
+	"encoding/binary"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"runtime"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,16 +30,20 @@ import (
 
 type LocalEmbeddingBenchReport struct {
 	NumQueries      int               `json:"num_queries"`
+	RetrievalDepth  int               `json:"retrieval_depth"`
 	Benchmark       string            `json:"benchmark"`
 	IncludesURLPIR  bool              `json:"includes_url_pir"`
 	GOMAXPROCS      int               `json:"gomaxprocs"`
 	ServerArtifact  string            `json:"server_artifact"`
+	QueryFile       string            `json:"query_file"`
 	Notes           string            `json:"notes"`
 	Corpus          CorpusBenchReport `json:"corpus"`
 	Setup           SetupBenchReport  `json:"setup"`
 	Preprocessing   PhaseBenchReport  `json:"preprocessing"`
 	OnlineEmbedding PhaseBenchReport  `json:"online_embedding"`
 	PerQueryTotals  TotalsBenchReport `json:"per_query_totals"`
+	QueryClusters   []int             `json:"query_clusters"`
+	RetrievedIDs    [][]uint64        `json:"retrieved_ids"`
 }
 
 type CorpusBenchReport struct {
@@ -52,6 +62,7 @@ type SetupBenchReport struct {
 	CorpusParamsMB            float64 `json:"corpus_params_mb"`
 	EmbeddingHintMB           float64 `json:"embedding_hint_mb"`
 	EmbeddingIndexMapMB       float64 `json:"embedding_index_map_mb"`
+	CentroidsMB               float64 `json:"centroids_mb"`
 }
 
 type PhaseBenchReport struct {
@@ -80,9 +91,17 @@ type TotalsBenchReport struct {
 	ClientSecondsTotal     float64 `json:"client_seconds_total"`
 }
 
-func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string) {
+type scoredDoc struct {
+	ID    uint64
+	Score int
+}
+
+func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string, queryPath string, retrievalDepth int) {
 	if numQueries <= 0 {
 		panic("numQueries must be positive")
+	}
+	if retrievalDepth <= 0 {
+		panic("retrievalDepth must be positive")
 	}
 	if conf.MAX_EMBEDDINGS_SERVERS() != 1 {
 		panic("local embedding benchmark expects exactly one embedding server")
@@ -90,6 +109,11 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 	gob.Register(corpus.Params{})
 	gob.Register(database.ClusterMap{})
 	runtime.GOMAXPROCS(1)
+
+	centroidPath := conf.PREAMBLE() + "/centroids.txt"
+	centroids := readCentroids(centroidPath, int(conf.EMBEDDINGS_DIM()))
+	queries := readFbin(queryPath, numQueries, int(conf.EMBEDDINGS_DIM()))
+	numQueries = len(queries)
 
 	serverArtifact := conf.EmbeddingServerLog(0)
 	serverLoadStart := time.Now()
@@ -108,6 +132,9 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 
 	var preprocessing PhaseBenchReport
 	var online PhaseBenchReport
+	queryClusters := make([]int, 0, numQueries)
+	retrievedIDs := make([][]uint64, 0, numQueries)
+	clusterDocIDs := make(map[int][]uint64)
 
 	for i := 0; i < numQueries; i++ {
 		preprocessQueryStart := time.Now()
@@ -130,12 +157,12 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 		client.ProcessHintApply(&UnderhoodAnswer{EmbAnswer: *hintAnswer})
 		preprocessing.ClientRecoverSecondsTotal += time.Since(preprocessRecoverStart).Seconds()
 
-		emb := embeddings.RandomEmbedding(client.params.EmbeddingSlots, (1 << (client.params.SlotBits - 1)))
-		cluster := uint64(i % client.NumClusters())
-
 		queryStart := time.Now()
+		emb := quantizeQuery(queries[i], float32(32.0), conf.SLOT_BITS())
+		cluster := uint64(nearestCentroid(centroids, emb))
 		query := client.QueryEmbeddings(emb, cluster)
 		online.ClientQuerySecondsTotal += time.Since(queryStart).Seconds()
+		queryClusters = append(queryClusters, int(cluster))
 
 		if i == 0 {
 			online.QueryMB = utils.MessageSizeMB(*query)
@@ -150,7 +177,13 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 		}
 
 		recoverStart := time.Now()
-		client.ReconstructEmbeddingsWithinCluster(answer, cluster)
+		scores := client.ReconstructEmbeddingsWithinCluster(answer, cluster)
+		docIDs, ok := clusterDocIDs[int(cluster)]
+		if !ok {
+			docIDs = readClusterDocIDs(conf.TxtCorpus(int(cluster)))
+			clusterDocIDs[int(cluster)] = docIDs
+		}
+		retrievedIDs = append(retrievedIDs, topDocIDs(docIDs, scores, server.hint.EmbeddingsHint.Info.P(), retrievalDepth))
 		online.ClientRecoverSecondsTotal += time.Since(recoverStart).Seconds()
 	}
 
@@ -175,14 +208,17 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 	corpusParamsMB := utils.MessageSizeMB(server.hint.CParams)
 	embeddingHintMB := utils.MessageSizeMB(server.hint.EmbeddingsHint)
 	embeddingIndexMapMB := utils.MessageSizeMB(server.hint.EmbeddingsIndexMap)
+	centroidsMB := fileSizeMB(centroidPath)
 
 	report := LocalEmbeddingBenchReport{
 		NumQueries:     numQueries,
+		RetrievalDepth: retrievalDepth,
 		Benchmark:      "tiptoe_embedding_local",
 		IncludesURLPIR: false,
 		GOMAXPROCS:     runtime.GOMAXPROCS(0),
 		ServerArtifact: serverArtifact,
-		Notes:          "ANNS/embedding phase only. URL/PIR is not run. Client and server core-seconds equal wall-clock seconds because this command forces GOMAXPROCS=1.",
+		QueryFile:      queryPath,
+		Notes:          "ANNS/embedding phase only. URL/PIR is not run. The benchmark uses real DEEP query embeddings, completes Tiptoe embedding retrieval, and records top document IDs. Client and server core-seconds equal wall-clock seconds because this command forces GOMAXPROCS=1.",
 		Corpus: CorpusBenchReport{
 			NumDocs:        client.params.NumDocs,
 			NumClusters:    client.NumClusters(),
@@ -198,6 +234,7 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 			CorpusParamsMB:            corpusParamsMB,
 			EmbeddingHintMB:           embeddingHintMB,
 			EmbeddingIndexMapMB:       embeddingIndexMapMB,
+			CentroidsMB:               centroidsMB,
 		},
 		Preprocessing:   preprocessing,
 		OnlineEmbedding: online,
@@ -210,6 +247,8 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 			ClientSecondsMean:      clientTotal / float64(numQueries),
 			ClientSecondsTotal:     clientTotal,
 		},
+		QueryClusters: queryClusters,
+		RetrievedIDs:  retrievedIDs,
 	}
 
 	out, err := json.MarshalIndent(report, "", "  ")
@@ -225,4 +264,172 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 	if err := os.WriteFile(outputPath, out, 0644); err != nil {
 		panic(err)
 	}
+}
+
+func readFbin(path string, limit int, wantDim int) [][]float32 {
+	f, err := os.Open(path)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	var nvecs int32
+	var dim int32
+	if err := binary.Read(f, binary.LittleEndian, &nvecs); err != nil {
+		panic(err)
+	}
+	if err := binary.Read(f, binary.LittleEndian, &dim); err != nil {
+		panic(err)
+	}
+	if int(dim) != wantDim {
+		panic(fmt.Sprintf("query dimension mismatch: got %d, want %d", dim, wantDim))
+	}
+	n := int(nvecs)
+	if limit < n {
+		n = limit
+	}
+	out := make([][]float32, n)
+	for i := 0; i < n; i++ {
+		out[i] = make([]float32, dim)
+		if err := binary.Read(f, binary.LittleEndian, out[i]); err != nil {
+			panic(err)
+		}
+	}
+	return out
+}
+
+func quantizeQuery(vals []float32, scale float32, slotBits uint64) []int8 {
+	bound := int(1 << (slotBits - 1))
+	out := make([]int8, len(vals))
+	for i, v := range vals {
+		q := int(math.Round(float64(v * scale)))
+		if q < -bound {
+			q = -bound
+		}
+		if q > bound-1 {
+			q = bound - 1
+		}
+		out[i] = int8(q)
+	}
+	return out
+}
+
+func readCentroids(path string, dim int) [][]float32 {
+	f, err := os.Open(path)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	var centroids [][]float32
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, 16*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != dim {
+			panic(fmt.Sprintf("centroid dimension mismatch in %s: got %d, want %d", path, len(fields), dim))
+		}
+		row := make([]float32, dim)
+		for i, field := range fields {
+			val, err := strconv.ParseFloat(field, 32)
+			if err != nil {
+				panic(err)
+			}
+			row[i] = float32(val)
+		}
+		centroids = append(centroids, row)
+	}
+	if err := scanner.Err(); err != nil {
+		panic(err)
+	}
+	return centroids
+}
+
+func nearestCentroid(centroids [][]float32, emb []int8) int {
+	best := 0
+	bestScore := float32(math.Inf(-1))
+	for i, centroid := range centroids {
+		score := float32(0)
+		for j, v := range emb {
+			score += centroid[j] * float32(v)
+		}
+		if score > bestScore {
+			bestScore = score
+			best = i
+		}
+	}
+	return best
+}
+
+func readClusterDocIDs(path string) []uint64 {
+	f, err := os.Open(path)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	var ids []uint64
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, 16*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || line == corpus.SUBCLUSTER_DELIM {
+			continue
+		}
+		before, _, ok := strings.Cut(line, " | ")
+		if !ok {
+			panic(fmt.Sprintf("bad cluster line in %s: %s", path, line))
+		}
+		id, err := strconv.ParseUint(before, 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		ids = append(ids, id)
+	}
+	if err := scanner.Err(); err != nil {
+		panic(err)
+	}
+	return ids
+}
+
+func topDocIDs(docIDs []uint64, scores []uint64, mod uint64, depth int) []uint64 {
+	n := len(scores)
+	if len(docIDs) < n {
+		n = len(docIDs)
+	}
+	docs := make([]scoredDoc, n)
+	for i := 0; i < n; i++ {
+		docs[i] = scoredDoc{
+			ID:    docIDs[i],
+			Score: embeddings.SmoothResult(scores[i], mod),
+		}
+	}
+	sort.Slice(docs, func(i, j int) bool {
+		if docs[i].Score == docs[j].Score {
+			return docs[i].ID < docs[j].ID
+		}
+		return docs[i].Score > docs[j].Score
+	})
+	if depth > len(docs) {
+		depth = len(docs)
+	}
+	out := make([]uint64, depth)
+	for i := 0; i < depth; i++ {
+		out[i] = docs[i].ID
+	}
+	return out
+}
+
+func fileSizeMB(path string) float64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		panic(err)
+	}
+	return float64(info.Size()) / (1024.0 * 1024.0)
 }
