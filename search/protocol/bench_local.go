@@ -114,7 +114,6 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 	}
 	gob.Register(corpus.Params{})
 	gob.Register(database.ClusterMap{})
-	runtime.GOMAXPROCS(1)
 
 	centroidPath := conf.PREAMBLE() + "/centroids.txt"
 	centroids := readCentroids(centroidPath, int(conf.EMBEDDINGS_DIM()))
