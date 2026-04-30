@@ -66,19 +66,25 @@ type SetupBenchReport struct {
 }
 
 type PhaseBenchReport struct {
-	QueryMB                   float64 `json:"query_mb"`
-	AnswerMB                  float64 `json:"answer_mb"`
-	CommunicationMB           float64 `json:"communication_mb"`
-	ClientQuerySecondsMean    float64 `json:"client_query_seconds_mean"`
-	ClientQuerySecondsTotal   float64 `json:"client_query_seconds_total"`
-	ClientCoreSecondsMean     float64 `json:"client_core_seconds_mean"`
-	ClientCoreSecondsTotal    float64 `json:"client_core_seconds_total"`
-	ServerAnswerSecondsMean   float64 `json:"server_answer_seconds_mean"`
-	ServerAnswerSecondsTotal  float64 `json:"server_answer_seconds_total"`
-	ServerCoreSecondsMean     float64 `json:"server_core_seconds_mean"`
-	ServerCoreSecondsTotal    float64 `json:"server_core_seconds_total"`
-	ClientRecoverSecondsMean  float64 `json:"client_recover_seconds_mean"`
-	ClientRecoverSecondsTotal float64 `json:"client_recover_seconds_total"`
+	QueryMB                       float64 `json:"query_mb"`
+	AnswerMB                      float64 `json:"answer_mb"`
+	CommunicationMB               float64 `json:"communication_mb"`
+	ClientQuerySecondsMean        float64 `json:"client_query_seconds_mean"`
+	ClientQuerySecondsTotal       float64 `json:"client_query_seconds_total"`
+	ClientQueryCoreSecondsMean    float64 `json:"client_query_core_seconds_mean"`
+	ClientQueryCoreSecondsTotal   float64 `json:"client_query_core_seconds_total"`
+	ClientCoreSecondsMean         float64 `json:"client_core_seconds_mean"`
+	ClientCoreSecondsTotal        float64 `json:"client_core_seconds_total"`
+	ServerAnswerSecondsMean       float64 `json:"server_answer_seconds_mean"`
+	ServerAnswerSecondsTotal      float64 `json:"server_answer_seconds_total"`
+	ServerAnswerCoreSecondsMean   float64 `json:"server_answer_core_seconds_mean"`
+	ServerAnswerCoreSecondsTotal  float64 `json:"server_answer_core_seconds_total"`
+	ServerCoreSecondsMean         float64 `json:"server_core_seconds_mean"`
+	ServerCoreSecondsTotal        float64 `json:"server_core_seconds_total"`
+	ClientRecoverSecondsMean      float64 `json:"client_recover_seconds_mean"`
+	ClientRecoverSecondsTotal     float64 `json:"client_recover_seconds_total"`
+	ClientRecoverCoreSecondsMean  float64 `json:"client_recover_core_seconds_mean"`
+	ClientRecoverCoreSecondsTotal float64 `json:"client_recover_core_seconds_total"`
 }
 
 type TotalsBenchReport struct {
@@ -127,8 +133,10 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 
 	client := NewClient(false /* coordinator */)
 	clientSetupStart := time.Now()
+	clientSetupCPUStart := cpuNow()
 	client.Setup(server.hint)
 	clientSetupSeconds := time.Since(clientSetupStart).Seconds()
+	clientSetupCoreSeconds := (cpuNow() - clientSetupCPUStart).Seconds()
 
 	var preprocessing PhaseBenchReport
 	var online PhaseBenchReport
@@ -138,30 +146,38 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 
 	for i := 0; i < numQueries; i++ {
 		preprocessQueryStart := time.Now()
+		preprocessQueryCPUStart := cpuNow()
 		hintQuery := client.PreprocessQuery()
 		preprocessing.ClientQuerySecondsTotal += time.Since(preprocessQueryStart).Seconds()
+		preprocessing.ClientQueryCoreSecondsTotal += (cpuNow() - preprocessQueryCPUStart).Seconds()
 
 		if i == 0 {
 			preprocessing.QueryMB = utils.MessageSizeMB(*hintQuery)
 		}
 
 		preprocessServerStart := time.Now()
+		preprocessServerCPUStart := cpuNow()
 		hintAnswer := hintServer.HintAnswer(hintQuery)
 		preprocessing.ServerAnswerSecondsTotal += time.Since(preprocessServerStart).Seconds()
+		preprocessing.ServerAnswerCoreSecondsTotal += (cpuNow() - preprocessServerCPUStart).Seconds()
 
 		if i == 0 {
 			preprocessing.AnswerMB = utils.MessageSizeMB(*hintAnswer)
 		}
 
 		preprocessRecoverStart := time.Now()
+		preprocessRecoverCPUStart := cpuNow()
 		client.ProcessHintApply(&UnderhoodAnswer{EmbAnswer: *hintAnswer})
 		preprocessing.ClientRecoverSecondsTotal += time.Since(preprocessRecoverStart).Seconds()
+		preprocessing.ClientRecoverCoreSecondsTotal += (cpuNow() - preprocessRecoverCPUStart).Seconds()
 
 		queryStart := time.Now()
+		queryCPUStart := cpuNow()
 		emb := quantizeQuery(queries[i], float32(32.0), conf.SLOT_BITS())
 		cluster := uint64(nearestCentroid(centroids, emb))
 		query := client.QueryEmbeddings(emb, cluster)
 		online.ClientQuerySecondsTotal += time.Since(queryStart).Seconds()
+		online.ClientQueryCoreSecondsTotal += (cpuNow() - queryCPUStart).Seconds()
 		queryClusters = append(queryClusters, int(cluster))
 
 		if i == 0 {
@@ -169,14 +185,17 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 		}
 
 		serverStart := time.Now()
+		serverCPUStart := cpuNow()
 		answer := server.embeddingsServer.Answer(query)
 		online.ServerAnswerSecondsTotal += time.Since(serverStart).Seconds()
+		online.ServerAnswerCoreSecondsTotal += (cpuNow() - serverCPUStart).Seconds()
 
 		if i == 0 {
 			online.AnswerMB = utils.MessageSizeMB(*answer)
 		}
 
 		recoverStart := time.Now()
+		recoverCPUStart := cpuNow()
 		scores := client.ReconstructEmbeddingsWithinCluster(answer, cluster)
 		docIDs, ok := clusterDocIDs[int(cluster)]
 		if !ok {
@@ -185,16 +204,20 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 		}
 		retrievedIDs = append(retrievedIDs, topDocIDs(docIDs, scores, server.hint.EmbeddingsHint.Info.P(), retrievalDepth))
 		online.ClientRecoverSecondsTotal += time.Since(recoverStart).Seconds()
+		online.ClientRecoverCoreSecondsTotal += (cpuNow() - recoverCPUStart).Seconds()
 	}
 
 	fillPhaseAverages := func(p *PhaseBenchReport) {
 		p.CommunicationMB = p.QueryMB + p.AnswerMB
 		p.ClientQuerySecondsMean = p.ClientQuerySecondsTotal / float64(numQueries)
+		p.ClientQueryCoreSecondsMean = p.ClientQueryCoreSecondsTotal / float64(numQueries)
 		p.ServerAnswerSecondsMean = p.ServerAnswerSecondsTotal / float64(numQueries)
-		p.ServerCoreSecondsMean = p.ServerAnswerSecondsMean
-		p.ServerCoreSecondsTotal = p.ServerAnswerSecondsTotal
+		p.ServerAnswerCoreSecondsMean = p.ServerAnswerCoreSecondsTotal / float64(numQueries)
+		p.ServerCoreSecondsMean = p.ServerAnswerCoreSecondsMean
+		p.ServerCoreSecondsTotal = p.ServerAnswerCoreSecondsTotal
 		p.ClientRecoverSecondsMean = p.ClientRecoverSecondsTotal / float64(numQueries)
-		p.ClientCoreSecondsTotal = p.ClientQuerySecondsTotal + p.ClientRecoverSecondsTotal
+		p.ClientRecoverCoreSecondsMean = p.ClientRecoverCoreSecondsTotal / float64(numQueries)
+		p.ClientCoreSecondsTotal = p.ClientQueryCoreSecondsTotal + p.ClientRecoverCoreSecondsTotal
 		p.ClientCoreSecondsMean = p.ClientCoreSecondsTotal / float64(numQueries)
 	}
 	fillPhaseAverages(&preprocessing)
@@ -218,7 +241,7 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 		GOMAXPROCS:     runtime.GOMAXPROCS(0),
 		ServerArtifact: serverArtifact,
 		QueryFile:      queryPath,
-		Notes:          "ANNS/embedding phase only. URL/PIR is not run. The benchmark uses real DEEP query embeddings, completes Tiptoe embedding retrieval, and records top document IDs. Client and server core-seconds equal wall-clock seconds because this command forces GOMAXPROCS=1.",
+		Notes:          "ANNS/embedding phase only. URL/PIR is not run. The benchmark uses real DEEP query embeddings, completes Tiptoe embedding retrieval, and records top document IDs. Wall-clock seconds and process CPU core-seconds are recorded separately.",
 		Corpus: CorpusBenchReport{
 			NumDocs:        client.params.NumDocs,
 			NumClusters:    client.NumClusters(),
@@ -229,7 +252,7 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 			ServerStateLoadSeconds:    serverLoadSeconds,
 			HintProcessorSetupSeconds: hintProcessorSetupSeconds,
 			ClientSetupSeconds:        clientSetupSeconds,
-			ClientSetupCoreSeconds:    clientSetupSeconds,
+			ClientSetupCoreSeconds:    clientSetupCoreSeconds,
 			HintTotalMB:               corpusParamsMB + embeddingHintMB + embeddingIndexMapMB,
 			CorpusParamsMB:            corpusParamsMB,
 			EmbeddingHintMB:           embeddingHintMB,

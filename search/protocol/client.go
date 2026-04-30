@@ -1,31 +1,23 @@
 package protocol
 
 import (
-  "fmt"
-  "io"
-  "log"
-  "time"
-  "strings"
-  "net/rpc"
-  "encoding/json"
-)
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/rpc"
+	"strings"
+	"time"
 
-import (
-  "github.com/henrycg/simplepir/pir"
-  "github.com/henrycg/simplepir/matrix"
-  "github.com/ahenzinger/underhood/underhood"
-)
-
-import (
-  "github.com/ahenzinger/tiptoe/search/utils"
-  "github.com/ahenzinger/tiptoe/search/corpus"
-  "github.com/ahenzinger/tiptoe/search/config"
-  "github.com/ahenzinger/tiptoe/search/embeddings"
-  "github.com/ahenzinger/tiptoe/search/database"
-)
-
-import (
-  "github.com/fatih/color"
+	"github.com/ahenzinger/tiptoe/search/config"
+	"github.com/ahenzinger/tiptoe/search/corpus"
+	"github.com/ahenzinger/tiptoe/search/database"
+	"github.com/ahenzinger/tiptoe/search/embeddings"
+	"github.com/ahenzinger/tiptoe/search/utils"
+	"github.com/ahenzinger/underhood/underhood"
+	"github.com/fatih/color"
+	"github.com/henrycg/simplepir/matrix"
+	"github.com/henrycg/simplepir/pir"
 )
 
 type UnderhoodAnswer struct {
