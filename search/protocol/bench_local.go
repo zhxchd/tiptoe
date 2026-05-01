@@ -222,7 +222,8 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 	fillPhaseAverages(&preprocessing)
 	fillPhaseAverages(&online)
 
-	clientTotal := preprocessing.ClientQuerySecondsTotal +
+	clientCoreTotal := preprocessing.ClientCoreSecondsTotal + online.ClientCoreSecondsTotal
+	clientWallTotal := preprocessing.ClientQuerySecondsTotal +
 		preprocessing.ClientRecoverSecondsTotal +
 		online.ClientQuerySecondsTotal +
 		online.ClientRecoverSecondsTotal
@@ -264,10 +265,10 @@ func BenchEmbeddingsLocal(conf *config.Config, numQueries int, outputPath string
 			CommunicationMB:        preprocessing.CommunicationMB + online.CommunicationMB,
 			ServerCoreSecondsMean:  serverTotal / float64(numQueries),
 			ServerCoreSecondsTotal: serverTotal,
-			ClientCoreSecondsMean:  clientTotal / float64(numQueries),
-			ClientCoreSecondsTotal: clientTotal,
-			ClientSecondsMean:      clientTotal / float64(numQueries),
-			ClientSecondsTotal:     clientTotal,
+			ClientCoreSecondsMean:  clientCoreTotal / float64(numQueries),
+			ClientCoreSecondsTotal: clientCoreTotal,
+			ClientSecondsMean:      clientWallTotal / float64(numQueries),
+			ClientSecondsTotal:     clientWallTotal,
 		},
 		QueryClusters: queryClusters,
 		RetrievedIDs:  retrievedIDs,
